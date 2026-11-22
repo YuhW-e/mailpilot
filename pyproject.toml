@@ -9,16 +9,19 @@ description = "MailPilot application"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1",
+    "google-cloud-firestore>=2.21,<3",
     "google-cloud-secret-manager>=2.24,<3",
+    "httpx>=0.28,<1",
+    "msal>=1.32,<2",
     "pydantic>=2.10,<3",
     "pydantic-settings>=2.8,<3",
+    "pyjwt[crypto]>=2.10,<3",
     "tzdata>=2025.2",
     "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.28,<1",
     "mypy>=1.15,<3",
     "pytest>=8.3,<10",
     "ruff>=0.11,<1",
