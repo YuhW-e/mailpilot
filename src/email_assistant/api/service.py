@@ -1,7 +1,12 @@
+from functools import lru_cache, partial
+
 import uvicorn
 from fastapi import FastAPI
 
+from email_assistant.api.telegram import install_webhook, install_worker, verified_invoker
 from email_assistant.config import ConfigurationError, Role, Settings, load_settings
+from email_assistant.runtime import database, digest_runtime, secret_reader
+from email_assistant.tasks.queue import CloudTaskQueue
 
 
 def create_service(settings: Settings, role: Role) -> FastAPI:
@@ -17,6 +22,31 @@ def create_service(settings: Settings, role: Role) -> FastAPI:
     @app.get("/healthz")
     def liveness() -> dict[str, str]:
         return {"status": "ok", "role": role.value}
+
+    @lru_cache(maxsize=1)
+    def queue() -> CloudTaskQueue:
+        return CloudTaskQueue.configured(settings)
+
+    if role == Role.INGRESS:
+
+        def secret() -> bytes:
+            if settings.environment == "test":
+                return b"fixture-webhook"
+            version = settings.telegram_webhook_secret_version
+            if version is None:
+                raise ConfigurationError("Webhook secret is missing.")
+            return secret_reader(settings).read(version).get_secret_value().encode()
+
+        install_webhook(app, settings, partial(database, settings), queue, secret)
+    elif role == Role.WORKER:
+        install_worker(
+            app,
+            settings,
+            partial(database, settings),
+            queue,
+            partial(digest_runtime, settings),
+            partial(verified_invoker, settings),
+        )
 
     return app
 

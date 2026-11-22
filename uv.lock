@@ -626,6 +626,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "google-cloud-firestore" },
     { name = "google-cloud-secret-manager" },
+    { name = "google-cloud-tasks" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "msal" },
@@ -633,6 +634,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-telegram-bot" },
     { name = "tzdata" },
     { name = "uvicorn" },
 ]
@@ -649,6 +651,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "google-cloud-firestore", specifier = ">=2.21,<3" },
     { name = "google-cloud-secret-manager", specifier = ">=2.24,<3" },
+    { name = "google-cloud-tasks", specifier = ">=2.20,<3" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "litellm", specifier = ">=1.110.2,<2" },
     { name = "msal", specifier = ">=1.32,<2" },
@@ -658,6 +661,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.8,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
+    { name = "python-telegram-bot", specifier = ">=22,<23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<1" },
     { name = "tzdata", specifier = ">=2025.2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
@@ -911,6 +915,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/09/02/472bdf6b83f78a9dfce9530811f3df0a1f5e3cb83ac631d2d82037fc21ea/google_cloud_secret_manager-2.32.0.tar.gz", hash = "sha256:104635f69f094f717caf0b68adf623f0f0cf7b3236dcba12d3a503e8637017e8", size = 286123, upload-time = "2026-11-05T18:40:19.95Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/08/b7/b4fcf7d01d9deb3162975fef788845cf45fd2c923e4544aa9904a184c248/google_cloud_secret_manager-2.32.0-py3-none-any.whl", hash = "sha256:74eb64fb0bcdd7369ba95b17685860900cfbd2c07a2a8c043680cb25a1197860", size = 230048, upload-time = "2026-11-05T18:39:33.09Z" },
+]
+
+[[package]]
+name = "google-cloud-tasks"
+version = "2.26.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/cc/3ff6a7bfd00ba892a32713dd1d28c0d8287040017e4eadb23338b95c7cda/google_cloud_tasks-2.26.0.tar.gz", hash = "sha256:df33be57411c57bd791461d0bbcd6d04b4e0e55f9c65b68682706cad247c5b06", size = 390489, upload-time = "2026-10-01T18:18:28.118Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/a6/8dda4fbb4f6a2312a4f1e3d3b6f049c55e446993d29e1c80d2caeb9b53f5/google_cloud_tasks-2.26.0-py3-none-any.whl", hash = "sha256:b020be5ca494907accd9ea7372d9963f747cd09e6370458511fc126d3f18525e", size = 325078, upload-time = "2026-10-01T18:12:41.099Z" },
 ]
 
 [[package]]
@@ -2234,6 +2255,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/74/26/2fbeedb218a787a5eea551c7532cac4e009f83d689dd2faa0d0353473f86/python_dotenv-1.2.4.tar.gz", hash = "sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0", size = 60824, upload-time = "2026-10-01T05:36:10Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/d1/38f3a3405989a89ac18390803e70c6ad7c7760da4f9b83cbeca0c44a0c72/python_dotenv-1.2.4-py3-none-any.whl", hash = "sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc", size = 23266, upload-time = "2026-10-01T05:36:08.633Z" },
+]
+
+[[package]]
+name = "python-telegram-bot"
+version = "22.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpcore", marker = "python_full_version >= '3.14'" },
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/77/153517bb1ac1bba670c6fb1dbf09e1fd0730494b1705934e715391413a0d/python_telegram_bot-22.8.tar.gz", hash = "sha256:f9d3847fcb23ee603477e442800b33bb4adf851a73e0619d2050be879decf1ef", size = 1551700, upload-time = "2026-06-12T08:10:29.1Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/7c/ed7d4dd94280bd434173cae9f7a7aedaaab9af128ae4f494423a5687c820/python_telegram_bot-22.8-py3-none-any.whl", hash = "sha256:42373918097f1b837cc4e717d588c19ea79651497ec712bb5b0c76e5e63c50e1", size = 769397, upload-time = "2026-06-12T08:10:27.066Z" },
 ]
 
 [[package]]

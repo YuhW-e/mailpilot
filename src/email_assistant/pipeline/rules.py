@@ -50,6 +50,11 @@ def _matches(predicate: RulePredicate, values: Iterable[str]) -> bool:
     return False
 
 
+def rule_order(entry: tuple[str, Rule]) -> tuple[int, bool, bool, bool, str]:
+    key, rule = entry
+    return (-rule.priority, not rule.override, rule.scope_id is None, rule.account_id is None, key)
+
+
 def evaluate_rules(
     account: AccountKey,
     message: MessageMetadata,
@@ -67,13 +72,7 @@ def evaluate_rules(
             and (rule.scope_id is None or rule.scope_id in scope_ids)
             and _matches(rule.predicate, fields[rule.predicate.field])
         ),
-        key=lambda entry: (
-            -entry[1].priority,
-            not entry[1].override,
-            entry[1].scope_id is None,
-            entry[1].account_id is None,
-            entry[0],
-        ),
+        key=rule_order,
     )
     subject = _normalize(message.subject)
     protected = bool(_SCHOOL_SUBJECT.search(subject)) or any(

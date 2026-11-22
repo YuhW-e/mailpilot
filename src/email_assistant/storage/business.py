@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from typing import ClassVar, Literal
 
 from google.cloud.firestore_v1 import DocumentReference, FieldFilter, Transaction
@@ -151,13 +152,24 @@ class BusinessRepository:
 
     def list_rules(self, account: AccountKey) -> tuple[tuple[str, Rule], ...]:
         self.db.account(account)
+        return self.owner_rules(account.owner_id, (account.account_id,))
+
+    def owner_rules(
+        self,
+        owner_id: str,
+        account_ids: Collection[str],
+    ) -> tuple[tuple[str, Rule], ...]:
+        if not owner_id:
+            raise AccountAccessError()
         query = self.db.client.collection(Rule.collection).where(
-            filter=FieldFilter("owner_id", "==", account.owner_id)
+            filter=FieldFilter("owner_id", "==", owner_id)
         )
         rules = []
         for snapshot in query.stream():
             row = snapshot.to_dict()
-            if row is not None and row.get("account_id") in (None, account.account_id):
+            if row is not None and (
+                row.get("account_id") is None or row["account_id"] in account_ids
+            ):
                 row.pop("revision", None)
                 rules.append((snapshot.id, Rule.model_validate(row)))
         return tuple(rules)

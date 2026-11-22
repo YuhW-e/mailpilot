@@ -1,6 +1,25 @@
 {
   "indexes": [
     {
+      "collectionGroup": "digest_batches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "chat_id", "order": "ASCENDING"},
+        {"fieldPath": "window_end", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "digest_batches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "chat_id", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "confirmed_at", "order": "DESCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "cursors",
       "queryScope": "COLLECTION",
       "fields": [
@@ -61,6 +80,10 @@
     {"collectionGroup": "emails", "fieldPath": "classification.action_items", "indexes": []},
     {"collectionGroup": "emails", "fieldPath": "classification.deadline", "indexes": []},
     {"collectionGroup": "sync_wakeups", "fieldPath": "expires_at", "ttl": true, "indexes": []},
+    {"collectionGroup": "number_mappings", "fieldPath": "entries", "indexes": []},
+    {"collectionGroup": "telegram_buttons", "fieldPath": "expires_at", "ttl": true, "indexes": []},
+    {"collectionGroup": "telegram_results", "fieldPath": "expires_at", "ttl": true, "indexes": []},
+    {"collectionGroup": "telegram_results", "fieldPath": "parts", "indexes": []},
     {"collectionGroup": "number_mappings", "fieldPath": "expires_at", "ttl": true, "indexes": []}
   ]
 }

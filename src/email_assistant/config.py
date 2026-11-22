@@ -1,6 +1,8 @@
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import Field, HttpUrl, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -43,10 +45,25 @@ class Settings(BaseSettings):
         default=None, validation_alias="FIRESTORE_EMULATOR_HOST"
     )
 
+    telegram_bot_id: PositiveInt | None = None
+    task_queue_path: (
+        Annotated[
+            str, Field(pattern=r"^projects/[a-z0-9-]+/locations/[a-z0-9-]+/queues/[A-Za-z0-9_-]+$")
+        ]
+        | None
+    ) = None
+    task_worker_url: HttpUrl | None = None
+    task_invoker_email: (
+        Annotated[str, Field(pattern=r"^[a-z0-9-]+@[a-z0-9.-]+[.]iam[.]gserviceaccount[.]com$")]
+        | None
+    ) = None
+
     telegram_webhook_secret_version: SecretVersion | None = Field(default=None, repr=False)
     telegram_bot_token_version: SecretVersion | None = Field(default=None, repr=False)
     model_api_key_version: SecretVersion | None = Field(default=None, repr=False)
 
+    outlook_tenant_id: UUID | None = None
+    outlook_client_id: UUID | None = None
     outlook_endpoint: HttpUrl | None = Field(default=None, repr=False)
     model_provider: Literal["openai", "gemini", "anthropic"] = "openai"
     model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")] | None = None
@@ -86,6 +103,21 @@ class Settings(BaseSettings):
             raise PydanticCustomError(
                 "mailpilot_policy", "only Ingress can use the Telegram webhook secret"
             )
+
+        task_config = (self.task_queue_path, self.task_worker_url, self.task_invoker_email)
+        if any(task_config) and not all(task_config):
+            raise PydanticCustomError("mailpilot_policy", "Cloud Tasks configuration is incomplete")
+        if self.task_worker_url:
+            url = urlsplit(str(self.task_worker_url))
+            if (
+                url.scheme != "https"
+                or url.path not in ("", "/")
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+            ):
+                raise PydanticCustomError("mailpilot_policy", "Worker URL must be an HTTPS origin")
 
         secret_versions = (
             self.telegram_webhook_secret_version,
