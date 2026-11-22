@@ -1,0 +1,31 @@
+# Python virtual environment, bytecode and package builds
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+
+# Tests, lint and type checks
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+/htmlcov/
+
+# Local environment files and macOS metadata
+.env
+.env.*
+.DS_Store
+
+# Local development, tests and planning documents
+/tests/
+/scripts/local-dev.sh
+/scripts/compose.yaml
+/AGENTS.md
+/PROMPT.md
+/README.md
+/docs/ARCHITECTURE.md
+/docs/DECISIONS.md
+/docs/tasks/
