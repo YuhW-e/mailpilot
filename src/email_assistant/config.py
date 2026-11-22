@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     model_api_key_version: SecretVersion | None = Field(default=None, repr=False)
 
     outlook_endpoint: HttpUrl | None = Field(default=None, repr=False)
+    model_provider: Literal["openai", "gemini", "anthropic"] = "openai"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")] | None = None
+    model_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 10
+    model_budget_seconds: Annotated[float, Field(gt=0, le=60)] = 20
+    model_max_attempts: Annotated[int, Field(ge=1, le=4)] = 2
+    model_input_bytes: Annotated[int, Field(ge=512, le=24000)] = 12000
+    model_output_tokens: Annotated[int, Field(ge=128, le=4096)] = 1200
     model_endpoint: HttpUrl | None = Field(default=None, repr=False)
     telegram_endpoint: HttpUrl | None = Field(default=None, repr=False)
 

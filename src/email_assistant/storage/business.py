@@ -1,8 +1,9 @@
 from typing import ClassVar, Literal
 
-from google.cloud.firestore_v1 import DocumentReference, Transaction
+from google.cloud.firestore_v1 import DocumentReference, FieldFilter, Transaction
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from email_assistant.ai.classification import Importance
 from email_assistant.email.provider import stable_key
 from email_assistant.storage.firestore import AccountAccessError, AccountKey, FirestoreRepository
 
@@ -28,7 +29,8 @@ class RuleAction(BaseModel):
 
     visible: bool | None = None
     category: str | None = Field(default=None, max_length=128)
-    importance: Literal["urgent", "high", "normal", "low", "advertisement"] | None = None
+    importance: Importance | None = None
+    protect: bool = False
 
 
 class Rule(OwnedRecord):
@@ -146,6 +148,19 @@ class BusinessRepository:
             return updated
 
         return self.db.atomic(save)
+
+    def list_rules(self, account: AccountKey) -> tuple[tuple[str, Rule], ...]:
+        self.db.account(account)
+        query = self.db.client.collection(Rule.collection).where(
+            filter=FieldFilter("owner_id", "==", account.owner_id)
+        )
+        rules = []
+        for snapshot in query.stream():
+            row = snapshot.to_dict()
+            if row is not None and row.get("account_id") in (None, account.account_id):
+                row.pop("revision", None)
+                rules.append((snapshot.id, Rule.model_validate(row)))
+        return tuple(rules)
 
     def get[T: OwnedRecord](
         self, record_type: type[T], owner_id: str, key: str, *, account_id: str | None = None

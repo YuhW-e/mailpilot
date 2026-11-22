@@ -56,6 +56,10 @@
     {"collectionGroup": "accounts", "fieldPath": "credential_version", "indexes": []},
     {"collectionGroup": "emails", "fieldPath": "subject", "indexes": []},
     {"collectionGroup": "emails", "fieldPath": "source_version", "indexes": []},
+    {"collectionGroup": "emails", "fieldPath": "classification.summary_zh", "indexes": []},
+    {"collectionGroup": "emails", "fieldPath": "classification.reason", "indexes": []},
+    {"collectionGroup": "emails", "fieldPath": "classification.action_items", "indexes": []},
+    {"collectionGroup": "emails", "fieldPath": "classification.deadline", "indexes": []},
     {"collectionGroup": "sync_wakeups", "fieldPath": "expires_at", "ttl": true, "indexes": []},
     {"collectionGroup": "number_mappings", "fieldPath": "expires_at", "ttl": true, "indexes": []}
   ]
