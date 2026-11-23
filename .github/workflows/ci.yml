@@ -1,0 +1,59 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+        with:
+          version: "0.9.18"
+          enable-cache: false
+      - name: Lint and type check
+        run: |
+          uv run --python 3.12 --locked --extra dev ruff check src infra/firestore.py scripts/authorize.py
+          uv run --python 3.12 --locked --extra dev ruff format --check src infra/firestore.py scripts/authorize.py
+          uv run --python 3.12 --locked --extra dev mypy src infra/firestore.py
+      - name: Core smoke tests
+        env:
+          MAILPILOT_ENVIRONMENT: test
+          MAILPILOT_PROJECT_ID: demo-mailpilot
+          MAILPILOT_EMAIL_PROVIDER: gmail
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
+          MAILPILOT_ALLOWED_USER_IDS: "[1001]"
+          MAILPILOT_ALLOWED_CHAT_IDS: "[1001]"
+        run: |
+          uv run --python 3.12 --locked --extra dev mailpilot-job
+          uv run --python 3.12 --locked --extra dev python - <<'PY'
+          from datetime import datetime, timedelta
+          from fastapi.testclient import TestClient
+          from email_assistant.api.ingress import create_app as ingress
+          from email_assistant.api.worker import create_app as worker
+          from email_assistant.pipeline.digest import Window
+
+          with TestClient(ingress()) as client:
+              assert client.get("/healthz").json()["role"] == "ingress"
+              assert client.post("/telegram/webhook", json={}).status_code == 403
+          with TestClient(worker()) as client:
+              assert client.get("/healthz").json()["role"] == "worker"
+              assert client.post("/internal/telegram/tasks", json={}).status_code == 403
+          spring = Window.scheduled(datetime.fromisoformat("2026-03-29T04:00:00Z"), "06:00")
+          autumn = Window.scheduled(datetime.fromisoformat("2026-10-25T05:00:00Z"), "06:00")
+          assert spring.end - spring.start == timedelta(hours=8)
+          assert autumn.end - autumn.start == timedelta(hours=10)
+          PY
+      - name: Check cloud deployment plan
+        run: |
+          for script in infra/common.sh infra/deploy.sh infra/bootstrap.sh infra/wif.sh; do
+            bash -n "$script" || exit
+          done
+          bash infra/deploy.sh --dry-run
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11

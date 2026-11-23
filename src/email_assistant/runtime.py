@@ -5,16 +5,19 @@ from dataclasses import dataclass
 from typing import Never
 from uuid import UUID
 
+import httpx
 from google.cloud import firestore
 
 from email_assistant.ai.provider import LiteLLMProvider, LLMProvider
 from email_assistant.config import ConfigurationError, Settings
+from email_assistant.email.gmail import GMAIL, GmailProvider
 from email_assistant.email.outlook import OutlookProvider
 from email_assistant.pipeline.classification import ClassificationCoordinator
 from email_assistant.pipeline.digest import DigestCoordinator, DigestStore
 from email_assistant.pipeline.sync import SyncCoordinator
 from email_assistant.security.account_secrets import AccountSecrets, SecretManagerAccountSecrets
 from email_assistant.security.credentials import CredentialCoordinator
+from email_assistant.security.gmail_oauth import GmailOAuth
 from email_assistant.security.outlook_oauth import OutlookOAuth
 from email_assistant.security.secrets import SecretManagerReader, SecretReader
 from email_assistant.storage.classification import ClassificationRepository
@@ -57,24 +60,46 @@ def digest_runtime(
     *,
     account_secrets: AccountSecrets | None = None,
     oauth: OutlookOAuth | None = None,
+    gmail_oauth: GmailOAuth | None = None,
+    gmail_transport: httpx.BaseTransport | None = None,
 ) -> Iterator[DigestRuntime]:
-    if settings.environment == "production" and (account_secrets is not None or oauth is not None):
-        raise ConfigurationError("模拟 Outlook 凭据仅在测试环境可用。")
-    if oauth is None:
-        tenant, client = settings.outlook_tenant_id, settings.outlook_client_id
-        if settings.environment == "production" and (tenant is None or client is None):
-            raise ConfigurationError("请配置 Outlook 租户和应用 ID。")
-        oauth = OutlookOAuth(str(tenant or UUID(int=0)), str(client or UUID(int=0)))
+    if settings.environment == "production" and any(
+        item is not None for item in (account_secrets, oauth, gmail_oauth, gmail_transport)
+    ):
+        raise ConfigurationError("模拟邮箱配置仅在测试环境可用。")
+    secrets = secret_reader(settings)
     if account_secrets is None:
         if settings.environment == "test":
-            raise ConfigurationError("请注入测试用 Outlook 凭据存储。")
-        account_secrets = SecretManagerAccountSecrets(settings.project_id)
-    secrets = secret_reader(settings)
-    outlook = OutlookProvider(oauth, settings=settings)
+            raise ConfigurationError("请注入测试用邮箱凭据存储。")
+        account_secrets = SecretManagerAccountSecrets(
+            settings.project_id, provider=settings.email_provider
+        )
+
+    provider: GmailProvider | OutlookProvider
+    if settings.email_provider == "gmail":
+        if settings.environment == "test" and (
+            gmail_oauth is None or not (gmail_transport or settings.gmail_endpoint)
+        ):
+            raise ConfigurationError("请注入 Gmail 测试 OAuth 和模拟端点。")
+        if gmail_oauth is None:
+            version = settings.gmail_oauth_client_version
+            if version is None:
+                raise ConfigurationError("请配置 Gmail OAuth 客户端密钥版本。")
+            gmail_oauth = GmailOAuth(secrets.read(version))
+        provider = GmailProvider(
+            gmail_oauth, endpoint=str(settings.gmail_endpoint or GMAIL), transport=gmail_transport
+        )
+    else:
+        if oauth is None:
+            tenant, client = settings.outlook_tenant_id, settings.outlook_client_id
+            if settings.environment == "production" and (tenant is None or client is None):
+                raise ConfigurationError("请配置 Outlook 租户和应用 ID。")
+            oauth = OutlookOAuth(str(tenant or UUID(int=0)), str(client or UUID(int=0)))
+        provider = OutlookProvider(oauth, settings=settings)
     try:
         repository = SyncRepository(db)
         sync = SyncCoordinator(
-            repository, outlook, CredentialCoordinator(db, account_secrets, outlook)
+            repository, provider, CredentialCoordinator(db, account_secrets, provider)
         )
         model = LiteLLMProvider(settings, secrets)
         classification = ClassificationCoordinator(
@@ -84,10 +109,10 @@ def digest_runtime(
             model,
         )
         delivery = Deliveries(db, TelegramNotifier(settings, secrets))
-        store = DigestStore(db)
+        store = DigestStore(db, provider=settings.email_provider)
         yield DigestRuntime(
             DigestCoordinator(settings, store, sync, classification, delivery, Buttons(store)),
             model,
         )
     finally:
-        outlook.close()
+        provider.close()

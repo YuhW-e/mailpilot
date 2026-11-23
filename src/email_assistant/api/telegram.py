@@ -1,14 +1,11 @@
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from functools import partial
 from hmac import compare_digest
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from google.auth.transport.requests import Request as GoogleRequest
-from google.oauth2 import id_token
 from starlette.concurrency import run_in_threadpool
 from telegram import Update
 
@@ -86,7 +83,9 @@ def install_webhook(
 
         def accept() -> bool:
             with database() as db:
-                operation = command(update, recipient, DigestStore(db))
+                operation = command(
+                    update, recipient, DigestStore(db, provider=settings.email_provider)
+                )
                 if operation is None:
                     return True
                 bot_id = settings.telegram_bot_id
@@ -114,25 +113,6 @@ def install_webhook(
                 response["text"] = "操作无效或已过期。"
             return JSONResponse(response)
         return Response(status_code=200)
-
-
-def verified_invoker(settings: Settings, authorization: str) -> bool:
-    method, _, token = authorization.partition(" ")
-    if method.lower() != "bearer" or not token or not settings.task_worker_url:
-        return False
-    try:
-        claims = id_token.verify_oauth2_token(  # type: ignore[no-untyped-call]
-            token,
-            partial(GoogleRequest(), timeout=3),
-            audience=str(settings.task_worker_url).rstrip("/"),
-        )
-    except Exception:
-        return False
-    return (
-        settings.task_invoker_email is not None
-        and claims.get("email") == settings.task_invoker_email
-        and claims.get("email_verified") is True
-    )
 
 
 def install_worker(
@@ -170,19 +150,3 @@ def install_worker(
         except Exception:
             return error(503, "任务状态暂时不可用。")
         return error(503, "任务等待重试。") if delay else Response(status_code=204)
-
-    @app.post("/internal/telegram/recover")
-    async def recover(request: Request) -> Response:
-        if not await run_in_threadpool(verify, request.headers.get("Authorization", "")):
-            return error(403, "任务调用方未获授权。")
-
-        def scan() -> int:
-            with database() as db:
-                return TelegramTasks(
-                    db, queue(), lease_seconds=settings.hard_timeout_seconds
-                ).recover()
-
-        try:
-            return JSONResponse({"dispatched": await run_in_threadpool(scan)})
-        except Exception:
-            return error(503, "任务恢复暂时不可用。")

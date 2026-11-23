@@ -1,7 +1,7 @@
 import json
 import re
 from collections.abc import Callable, Iterator
-from typing import Protocol
+from typing import Literal, Protocol
 
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import secretmanager
@@ -29,10 +29,15 @@ class AccountSecrets(Protocol):
 
 class SecretManagerAccountSecrets:
     def __init__(
-        self, project: str, client: secretmanager.SecretManagerServiceClient | None = None
+        self,
+        project: str,
+        client: secretmanager.SecretManagerServiceClient | None = None,
+        *,
+        provider: Literal["outlook", "gmail"] = "outlook",
     ) -> None:
         if not re.fullmatch(r"[a-z0-9-]+", project):
             raise ValueError("Invalid credential project.")
+        self._provider = provider
         self._project = f"projects/{project}"
         self._client = client or secretmanager.SecretManagerServiceClient()
         self._reader = SecretManagerReader(self._client)
@@ -40,7 +45,7 @@ class SecretManagerAccountSecrets:
     def _parent(self, account_id: str) -> str:
         if not re.fullmatch(r"[0-9a-f]{64}", account_id):
             raise CredentialStoreError()
-        return f"{self._project}/secrets/mailpilot-outlook-{account_id}"
+        return f"{self._project}/secrets/mailpilot-{self._provider}-{account_id}"
 
     def ensure(self, account_id: str) -> None:
         parent = self._parent(account_id)

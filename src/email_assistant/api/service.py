@@ -3,9 +3,12 @@ from functools import lru_cache, partial
 import uvicorn
 from fastapi import FastAPI
 
-from email_assistant.api.telegram import install_webhook, install_worker, verified_invoker
+from email_assistant.api.scheduler import install_scheduler
+from email_assistant.api.telegram import install_webhook, install_worker
 from email_assistant.config import ConfigurationError, Role, Settings, load_settings
+from email_assistant.pipeline.digest_job import submit_job
 from email_assistant.runtime import database, digest_runtime, secret_reader
+from email_assistant.security.invoker import verified_invoker
 from email_assistant.tasks.queue import CloudTaskQueue
 
 
@@ -39,14 +42,27 @@ def create_service(settings: Settings, role: Role) -> FastAPI:
 
         install_webhook(app, settings, partial(database, settings), queue, secret)
     elif role == Role.WORKER:
+        audience = str(settings.task_worker_url).rstrip("/") if settings.task_worker_url else ""
         install_worker(
             app,
             settings,
             partial(database, settings),
             queue,
             partial(digest_runtime, settings),
-            partial(verified_invoker, settings),
+            partial(verified_invoker, audience=audience, email=settings.task_invoker_email),
         )
+
+        if settings.digest_job:
+            install_scheduler(
+                app,
+                settings,
+                partial(database, settings),
+                queue,
+                partial(
+                    verified_invoker, audience=audience, email=settings.scheduler_invoker_email
+                ),
+                partial(submit_job, settings.digest_job),
+            )
 
     return app
 

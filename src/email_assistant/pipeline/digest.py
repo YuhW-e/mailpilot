@@ -12,6 +12,7 @@ from telegram import InlineKeyboardMarkup
 
 from email_assistant.ai.classification import Classification
 from email_assistant.config import Settings
+from email_assistant.email.gmail import MAILBOX
 from email_assistant.email.provider import ErrorCode, ProviderError, stable_key
 from email_assistant.pipeline.classification import ClassificationCoordinator, _clean
 from email_assistant.pipeline.sync import SyncCoordinator
@@ -83,11 +84,14 @@ class DigestRun:
     pages: int = 0
     emails: int = 0
     retry_after: float = 0
+    accounts: int = 0
+    pending_accounts: int = 0
 
 
 class DigestStore:
-    def __init__(self, db: FirestoreRepository) -> None:
+    def __init__(self, db: FirestoreRepository, *, provider: str = "outlook") -> None:
         self.db = db
+        self.provider = provider
 
     def accounts(self, recipient: Recipient) -> list[AccountKey]:
         query = self.db.client.collection("accounts").where(
@@ -96,7 +100,7 @@ class DigestStore:
         return [
             AccountKey(recipient.owner_id, doc.id)
             for doc in query.stream()
-            if (doc.to_dict() or {}).get("identity", {}).get("provider") == "outlook"
+            if (doc.to_dict() or {}).get("identity", {}).get("provider") == self.provider
         ]
 
     def batch(self, recipient: Recipient, batch_id: str) -> Record | None:
@@ -140,12 +144,27 @@ class DigestStore:
             return None
         return row
 
+    def includes(self, account: AccountKey, email_key: str) -> bool:
+        if self.provider != "gmail":
+            return True
+        membership = self.db.read(
+            self.db.ref("scope_memberships", stable_key(email_key, MAILBOX.id))
+        )
+        return bool(
+            membership
+            and membership["owner_id"] == account.owner_id
+            and membership["account_id"] == account.account_id
+        )
+
     def email(self, recipient: Recipient, entry: DigestEntry) -> tuple[AccountKey, Record]:
         account = AccountKey(recipient.owner_id, entry.account_id)
-        status = self.db.account(account)["credential_status"]
+        registered = self.db.account(account)
+        status = registered["credential_status"]
         row = self.db.read(self.db.ref("emails", entry.email_key))
         if (
             status == "revoked"
+            or registered.get("identity", {}).get("provider") != self.provider
+            or not self.includes(account, entry.email_key)
             or not row
             or row["owner_id"] != recipient.owner_id
             or row["account_id"] != account.account_id
@@ -181,8 +200,10 @@ class PageButtons(Protocol):
         batch: Record,
         view: View,
         page: int,
-        entries: list[DigestEntry],
+        entry: DigestEntry | None,
         business_key: str,
+        segment: int,
+        footer_entries: list[DigestEntry] | None,
     ) -> InlineKeyboardMarkup: ...
 
 
@@ -194,7 +215,7 @@ def plain(text: str, limit: int) -> str:
     return " ".join(_clean(text).split())[:limit]
 
 
-def render_page(batch: Record, view: View, page: int, entries: list[DigestEntry]) -> str:
+def _page_header(batch: Record, view: View, page: int) -> str:
     label = "邮件摘要" if view == "digest" else "过滤清单"
     end = batch["window_end"].astimezone(ZONE).strftime("%Y-%m-%d %H:%M")
     header = (
@@ -208,12 +229,17 @@ def render_page(batch: Record, view: View, page: int, entries: list[DigestEntry]
         failed = len(batch["accounts"]) - success - partial
         header += f"\n账户完成 {success} · 待补收 {partial} · 不可用 {failed}"
         header += f"\n过滤 {batch['counts']['filtered']} 封"
-    lines = [
-        f"{entry.number}. {entry.subject or '（无主题）'}{'［补收］' if entry.late else ''}"
-        f"\n{entry.sender}\n{entry.summary}"
-        for entry in entries
-    ]
-    return "\n\n".join([header, *(lines or ["本页没有邮件。"])])
+    return header
+
+
+def _entry_title(entry: DigestEntry) -> str:
+    late = "［补收］" if entry.late else ""
+    return f"{entry.number}. {entry.subject or '（无主题）'}{late}"
+
+
+def render_page(batch: Record, view: View, page: int, entries: list[DigestEntry]) -> str:
+    lines = [f"{_entry_title(entry)}\n{entry.sender}\n{entry.summary}" for entry in entries]
+    return "\n\n".join([_page_header(batch, view, page), *(lines or ["本页没有邮件。"])])
 
 
 class DigestCoordinator:
@@ -287,28 +313,41 @@ class DigestCoordinator:
             pages = 0
             if not old.get("snapshot"):
                 attempt = old.get("build_attempt", 0) + 1
-                old, pages = await self._build(recipient, window, batch_id, token, deadline)
-                if attempt < 3 and "有待补收" in old["accounts"].values():
-                    pending = {
+                old, pages = await self._build(
+                    recipient, window, batch_id, token, deadline, attempt
+                )
+                self._seal(
+                    lock,
+                    token,
+                    ref,
+                    old
+                    if old.get("snapshot")
+                    else {
                         "owner_id": recipient.owner_id,
                         "chat_id": str(recipient.chat_id),
                         "window_start": window.start,
                         "window_end": window.end,
                         "slot": window.slot,
                         "build_attempt": attempt,
-                    }
-                    self._seal(lock, token, ref, pending)
-                    return DigestRun(batch_id, "retry", pages, retry_after=5)
-
-                self._seal(lock, token, ref, old)
-            result = await self.send_page(recipient, old, "digest", 0, batch_id)
+                    },
+                )
+            if not old.get("snapshot") or (window.slot and monotonic() >= deadline):
+                result = SendResult("retry", retry_after=5)
+            else:
+                result = await self.send_page(recipient, old, "digest", 0, batch_id)
             if result.state in {"confirmed", "failed", "unknown"}:
                 values: Record = {"status": result.state}
                 if result.state == "confirmed":
                     values["confirmed_at"] = db.clock()
                 db.atomic(lambda tx: self._finish_batch(tx, lock, token, ref, values))
             return DigestRun(
-                batch_id, result.state, pages, sum(old["counts"].values()), result.retry_after
+                batch_id,
+                result.state,
+                pages,
+                sum(old["counts"].values()),
+                result.retry_after,
+                accounts=len(old["accounts"]),
+                pending_accounts=list(old["accounts"].values()).count("有待补收"),
             )
         finally:
             db.atomic(release)
@@ -349,6 +388,7 @@ class DigestCoordinator:
         batch_id: str,
         snapshot: str,
         deadline: float,
+        attempt: int,
     ) -> tuple[Record, int]:
         db = self.store.db
         statuses = {}
@@ -389,7 +429,7 @@ class DigestCoordinator:
                     statuses[account.account_id] = "有待补收"
                     break
                 row = doc.to_dict()
-                if not row or doc.id in seen:
+                if not row or doc.id in seen or not self.store.includes(account, doc.id):
                     continue
                 try:
                     classification = (
@@ -417,6 +457,12 @@ class DigestCoordinator:
                     late=row["received_at"] < window.start,
                 )
                 views[view].append((row["received_at"], entry))
+
+        counts = {view: len(rows) for view, rows in views.items()}
+        if "有待补收" in statuses.values() and (
+            attempt < 3 or (window.slot and monotonic() >= deadline)
+        ):
+            return {"accounts": statuses, "counts": counts}, pages
 
         expires = db.clock() + RETENTION
         for view, rows in views.items():
@@ -448,7 +494,7 @@ class DigestCoordinator:
             "status": "ready",
             "slot": window.slot,
             "accounts": statuses,
-            "counts": {view: len(rows) for view, rows in views.items()},
+            "counts": counts,
             "window_start": window.start,
             "window_end": window.end,
             "expires_at": expires,
@@ -465,25 +511,67 @@ class DigestCoordinator:
     ) -> SendResult:
         if outcome := self.deliveries.outcome(recipient, business_key):
             return outcome
-        entries = []
-        for entry in self.store.page(batch, view, page):
+        if self.buttons is not None:
+            # Older releases used segment zero for the whole page. An in-flight
+            # legacy send may already have delivered all entries.
+            db = self.store.db
+            legacy = db.read(db.ref("deliveries", Deliveries.key(recipient, business_key, 0)))
+            if legacy and legacy["state"] == "sending":
+                delay = (legacy["next_check_at"] - db.clock()).total_seconds()
+                return SendResult("busy", retry_after=delay) if delay > 0 else SendResult("unknown")
+        visible = []
+        # Preserve a message's segment across retries even if another entry loses access.
+        for segment, entry in enumerate(self.store.page(batch, view, page), start=1):
             try:
                 self.store.email(recipient, entry)
             except AccountAccessError:
                 continue
-            entries.append(entry)
-        text = render_page(batch, view, page, entries)
-        keyboard = (
-            self.buttons.keyboard(recipient, batch, view, page, entries, business_key)
-            if self.buttons
-            else None
-        )
-        return await self.deliveries.send(
-            recipient,
-            business_key,
-            0,
-            text,
-            batch_id=batch["batch_id"],
-            keyboard=keyboard,
-            view=view,
-        )
+            visible.append((segment, entry))
+        entries = [entry for _, entry in visible]
+        if self.buttons is None:
+            return await self.deliveries.send(
+                recipient,
+                business_key,
+                0,
+                render_page(batch, view, page, entries),
+                batch_id=batch["batch_id"],
+                view=view,
+            )
+
+        segments: list[tuple[int, DigestEntry | None]] = [(n, entry) for n, entry in visible]
+        if not segments:
+            segments.append((PAGE_SIZE + 1, None))
+        result = SendResult("confirmed")
+        for index, (segment, item) in enumerate(segments):
+            if previous := self.deliveries.outcome(recipient, business_key, segment):
+                result = previous
+            else:
+                text = (
+                    f"{_entry_title(item)}\n{item.sender}\n{item.summary}"
+                    if item
+                    else "本页没有邮件。"
+                )
+                if index == 0:
+                    text = f"{_page_header(batch, view, page)}\n\n{text}"
+                keyboard = self.buttons.keyboard(
+                    recipient,
+                    batch,
+                    view,
+                    page,
+                    item,
+                    business_key,
+                    segment,
+                    entries if index == len(segments) - 1 else None,
+                )
+                result = await self.deliveries.send(
+                    recipient,
+                    business_key,
+                    segment,
+                    text,
+                    batch_id=batch["batch_id"],
+                    keyboard=keyboard,
+                    view=view,
+                )
+            if result.state != "confirmed":
+                return result
+        return result

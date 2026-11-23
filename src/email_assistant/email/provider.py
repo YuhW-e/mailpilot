@@ -2,11 +2,26 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Protocol
 
 from pydantic import SecretStr
+
+
+def retry_after(value: str | None) -> float | None:
+    if value:
+        try:
+            delay = float(value)
+        except ValueError:
+            try:
+                delay = (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                return None
+        if -31_536_000 <= delay <= 31_536_000:
+            return max(0, delay)
+    return None
 
 
 def stable_key(*parts: str) -> str:

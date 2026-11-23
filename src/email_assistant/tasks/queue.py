@@ -5,6 +5,7 @@ from typing import Protocol
 
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import tasks_v2
+from google.protobuf.duration_pb2 import Duration  # type: ignore[import-untyped]
 from google.protobuf.timestamp_pb2 import Timestamp  # type: ignore[import-untyped]
 
 from email_assistant.config import ConfigurationError, Settings
@@ -26,6 +27,7 @@ class CloudTaskQueue:
     queue: str
     worker: str
     invoker: str
+    timeout_seconds: int = 600
 
     @classmethod
     def configured(cls, settings: Settings) -> "CloudTaskQueue":
@@ -36,7 +38,13 @@ class CloudTaskQueue:
         )
         if path is None or url is None or invoker is None:
             raise ConfigurationError("请配置 Cloud Tasks 队列和 Worker 身份。")
-        return cls(tasks_v2.CloudTasksClient(), path, str(url).rstrip("/"), invoker)
+        return cls(
+            tasks_v2.CloudTasksClient(),
+            path,
+            str(url).rstrip("/"),
+            invoker,
+            max(15, min(1800, settings.hard_timeout_seconds)),
+        )
 
     def enqueue(self, task_id: str, generation: int, at: datetime) -> None:
         name = stable_key(task_id, str(generation))
@@ -49,6 +57,7 @@ class CloudTaskQueue:
                     task=tasks_v2.Task(
                         name=f"{self.queue}/tasks/{name}",
                         schedule_time=timestamp,
+                        dispatch_deadline=Duration(seconds=self.timeout_seconds),
                         http_request=tasks_v2.HttpRequest(
                             url=f"{self.worker}/internal/telegram/tasks",
                             http_method=tasks_v2.HttpMethod.POST,

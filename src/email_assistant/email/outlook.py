@@ -2,8 +2,6 @@ import json
 from collections import deque
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
-from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
@@ -11,6 +9,7 @@ import httpx
 from pydantic import SecretStr
 
 from email_assistant.config import Settings
+from email_assistant.email.message_text import html_text
 from email_assistant.email.provider import (
     Authorization,
     Change,
@@ -23,49 +22,13 @@ from email_assistant.email.provider import (
     ProviderError,
     Scope,
     SyncPage,
+    retry_after,
 )
 from email_assistant.security.outlook_oauth import OutlookOAuth
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 EXCLUDED = ("sentitems", "drafts", "outbox", "junkemail", "deleteditems")
 FIELDS = "id,receivedDateTime,from,subject,changeKey,isDraft"
-
-
-class _Text(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.hidden = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style", "head", "template"}:
-            self.hidden += 1
-        elif not self.hidden and tag in {"br", "p", "div", "li", "tr"}:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style", "head", "template"} and self.hidden:
-            self.hidden -= 1
-        elif not self.hidden and tag in {"p", "div", "li", "tr"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if not self.hidden:
-            self.parts.append(data)
-
-
-def _retry_after(value: str | None) -> float | None:
-    if value:
-        try:
-            delay = float(value)
-        except ValueError:
-            try:
-                delay = (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds()
-            except (TypeError, ValueError, OverflowError):
-                return None
-        if -31_536_000 <= delay <= 31_536_000:
-            return max(0, delay)
-    return None
 
 
 def _id(data: Any) -> str:
@@ -178,7 +141,7 @@ class OutlookProvider:
                 if status == 429 or status >= 500:
                     raise ProviderError(
                         ErrorCode.THROTTLED if status == 429 else ErrorCode.TEMPORARY,
-                        retry_after=_retry_after(response.headers.get("Retry-After")),
+                        retry_after=retry_after(response.headers.get("Retry-After")),
                     )
                 if status == 401:
                     raise ProviderError(ErrorCode.REAUTHORIZE)
@@ -331,10 +294,7 @@ class OutlookProvider:
             if not isinstance(content, str) or kind not in {"text", "html"}:
                 raise ValueError
             if kind == "html":
-                parser = _Text()
-                parser.feed(content)
-                parser.close()
-                content = "".join(parser.parts)
+                content = html_text(content)
             return MessageBody(metadata, content)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             raise ProviderError(ErrorCode.INVALID_RESPONSE) from None

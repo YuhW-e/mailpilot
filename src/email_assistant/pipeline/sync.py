@@ -7,6 +7,7 @@ from time import monotonic, sleep
 
 from pydantic import SecretStr
 
+from email_assistant.email.gmail import GmailProvider
 from email_assistant.email.provider import EmailProvider, ErrorCode, MessageBody, ProviderError
 from email_assistant.security.credentials import CredentialCoordinator
 from email_assistant.storage.firestore import AccountKey
@@ -40,6 +41,7 @@ class SyncCoordinator:
         self.clock = clock
         self.wait = wait
         self.jitter = jitter
+        self.retries = 0
 
     def run(
         self,
@@ -69,6 +71,7 @@ class SyncCoordinator:
         def retry[T](operation: Callable[[], T]) -> T:
             for attempt in range(3):
                 check_budget()
+                self.retries += int(attempt > 0)
                 try:
                     return operation()
                 except ProviderError as exc:
@@ -99,7 +102,7 @@ class SyncCoordinator:
             generation, discovered = round_state
             reauthenticated = False
 
-            def graph[T](operation: Callable[[SecretStr], T]) -> T:
+            def authenticated[T](operation: Callable[[SecretStr], T]) -> T:
                 nonlocal token, reauthenticated
                 try:
                     return retry(lambda: operation(token))
@@ -111,7 +114,9 @@ class SyncCoordinator:
                     return retry(lambda: operation(token))
 
             if not discovered:
-                discovery = graph(partial(self.provider.list_scopes, check_budget=check_budget))
+                discovery = authenticated(
+                    partial(self.provider.list_scopes, check_budget=check_budget)
+                )
                 check_budget()
                 self.store.discover(lease, generation, discovery, backfill_start, backfill_end)
 
@@ -125,13 +130,22 @@ class SyncCoordinator:
                     continue
                 started = self.store.db.clock()
                 try:
-                    page = graph(
-                        partial(
+                    if isinstance(self.provider, GmailProvider):
+                        fetch = partial(
+                            self.provider.sync_page,
+                            scope=checkpoint.scope,
+                            continuation=checkpoint.continuation,
+                            start=checkpoint.data.get("recovery_start")
+                            or checkpoint.data["window_start"],
+                            check_budget=check_budget,
+                        )
+                    else:
+                        fetch = partial(
                             self.provider.sync_page,
                             scope=checkpoint.scope,
                             continuation=checkpoint.continuation,
                         )
-                    )
+                    page = authenticated(fetch)
                 except ProviderError as exc:
                     if exc.code == ErrorCode.CURSOR_EXPIRED and checkpoint.continuation:
                         self.store.reset(lease, generation, checkpoint)

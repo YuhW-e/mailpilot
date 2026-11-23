@@ -1,5 +1,6 @@
 import re
 from secrets import token_urlsafe
+from typing import Literal
 
 from google.cloud.firestore_v1 import Transaction
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,73 +22,73 @@ class Buttons:
         batch: Record,
         view: View,
         page: int,
-        entries: list[DigestEntry],
+        entry: DigestEntry | None,
         business_key: str,
+        segment: int,
+        footer_entries: list[DigestEntry] | None,
     ) -> InlineKeyboardMarkup:
         db = self.store.db
-        delivery_id = Deliveries.key(recipient, business_key, 0)
-        commands: list[list[tuple[str, Operation]]] = [
-            [
-                (
-                    f"详情 {entry.number}",
-                    Operation(
-                        action="detail",
-                        batch_id=batch["batch_id"],
-                        view=view,
-                        numbers=(entry.number,),
-                    ),
-                ),
-                (
-                    f"翻译 {entry.number}",
-                    Operation(
-                        action="translate",
-                        batch_id=batch["batch_id"],
-                        view=view,
-                        numbers=(entry.number,),
-                    ),
-                ),
-            ]
-            for entry in entries
-        ]
-        if len(entries) > 1:
+        delivery_id = Deliveries.key(recipient, business_key, segment)
+        commands: list[list[tuple[str, Operation]]] = []
+        if entry is not None:
+            actions: tuple[tuple[str, Literal["detail", "translate"]], ...] = (
+                ("详情", "detail"),
+                ("翻译", "translate"),
+            )
             commands.append(
                 [
                     (
-                        "本页全部详情",
+                        f"{label} {entry.number}",
                         Operation(
-                            action="detail",
+                            action=action,
                             batch_id=batch["batch_id"],
                             view=view,
-                            numbers=tuple(entry.number for entry in entries),
+                            numbers=(entry.number,),
                         ),
+                    )
+                    for label, action in actions
+                ]
+            )
+        if footer_entries is not None:
+            navigation = []
+            for label, destination in (("上一页", page - 1), ("下一页", page + 1)):
+                if 0 <= destination < page_count(batch["counts"][view]):
+                    navigation.append(
+                        (
+                            label,
+                            Operation(
+                                action="page",
+                                batch_id=batch["batch_id"],
+                                view=view,
+                                page=destination,
+                            ),
+                        )
+                    )
+            if navigation:
+                commands.append(navigation)
+            if len(footer_entries) > 1:
+                commands.append(
+                    [
+                        (
+                            "本页全部详情",
+                            Operation(
+                                action="detail",
+                                batch_id=batch["batch_id"],
+                                view=view,
+                                numbers=tuple(entry.number for entry in footer_entries),
+                            ),
+                        )
+                    ]
+                )
+            other: View = "filtered" if view == "digest" else "digest"
+            commands.append(
+                [
+                    (
+                        "过滤清单" if other == "filtered" else "邮件摘要",
+                        Operation(action="page", batch_id=batch["batch_id"], view=other),
                     )
                 ]
             )
-        navigation = []
-        for label, destination in (("上一页", page - 1), ("下一页", page + 1)):
-            if 0 <= destination < page_count(batch["counts"][view]):
-                navigation.append(
-                    (
-                        label,
-                        Operation(
-                            action="page",
-                            batch_id=batch["batch_id"],
-                            view=view,
-                            page=destination,
-                        ),
-                    )
-                )
-        if navigation:
-            commands.append(navigation)
-        other: View = "filtered" if view == "digest" else "digest"
-        commands.append(
-            [
-                (
-                    "过滤清单" if other == "filtered" else "邮件摘要",
-                    Operation(action="page", batch_id=batch["batch_id"], view=other),
-                )
-            ]
-        )
 
         def create(tx: Transaction) -> list[list[str]]:
             rows = []

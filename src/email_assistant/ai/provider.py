@@ -70,6 +70,8 @@ class LiteLLMProvider:
         self._secrets = secrets
         self._test_key = test_key if test_key is not None else SecretStr("fixture")
         self._test_transport = test_transport
+        self.requests = 0
+        self.retries = 0
 
     async def complete[T: BaseModel](
         self, instructions: str, text: str, schema: type[T], *, deadline: float
@@ -89,7 +91,11 @@ class LiteLLMProvider:
                 async with asyncio.timeout(min(settings.model_timeout_seconds, remaining)):
                     key = await self._key()
                     content = await self._request(
-                        system, text, key, min(remaining, settings.model_timeout_seconds)
+                        system,
+                        text,
+                        key,
+                        min(remaining, settings.model_timeout_seconds),
+                        retry=attempt > 0,
                     )
                 if len(content) > 6000 or key.get_secret_value() in content:
                     raise ModelError(ModelErrorCode.INVALID_OUTPUT)
@@ -121,7 +127,9 @@ class LiteLLMProvider:
         except SecretReadError:
             raise ModelError(ModelErrorCode.CONFIGURATION) from None
 
-    async def _request(self, system: str, text: str, key: SecretStr, timeout: float) -> str:
+    async def _request(
+        self, system: str, text: str, key: SecretStr, timeout: float, *, retry: bool
+    ) -> str:
         settings = self._settings
         provider = settings.model_provider if not settings.model_endpoint else "openai"
         model = settings.model_name or ("fixture" if settings.model_endpoint else None)
@@ -151,6 +159,8 @@ class LiteLLMProvider:
             ):
                 raise ModelError(ModelErrorCode.CONFIGURATION)
             sent = True
+            self.requests += 1
+            self.retries += int(retry)
 
         async def record_status(response: httpx.Response) -> None:
             nonlocal status, retry_after

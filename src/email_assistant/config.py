@@ -16,6 +16,11 @@ ServicePort = Annotated[int, Field(ge=1, le=65535)]
 SecretVersion = Annotated[str, Field(pattern=SECRET_VERSION_PATTERN)]
 
 
+ServiceAccountEmail = Annotated[
+    str, Field(pattern=r"^[a-z0-9-]+@[a-z0-9.-]+[.]iam[.]gserviceaccount[.]com$")
+]
+
+
 class Role(StrEnum):
     JOB = "job"
     INGRESS = "ingress"
@@ -53,8 +58,10 @@ class Settings(BaseSettings):
         | None
     ) = None
     task_worker_url: HttpUrl | None = None
-    task_invoker_email: (
-        Annotated[str, Field(pattern=r"^[a-z0-9-]+@[a-z0-9.-]+[.]iam[.]gserviceaccount[.]com$")]
+    task_invoker_email: ServiceAccountEmail | None = None
+    scheduler_invoker_email: ServiceAccountEmail | None = None
+    digest_job: (
+        Annotated[str, Field(pattern=r"^projects/[a-z0-9-]+/locations/[a-z0-9-]+/jobs/[a-z0-9-]+$")]
         | None
     ) = None
 
@@ -62,6 +69,9 @@ class Settings(BaseSettings):
     telegram_bot_token_version: SecretVersion | None = Field(default=None, repr=False)
     model_api_key_version: SecretVersion | None = Field(default=None, repr=False)
 
+    email_provider: Literal["outlook", "gmail"] = "outlook"
+    gmail_oauth_client_version: SecretVersion | None = Field(default=None, repr=False)
+    gmail_endpoint: HttpUrl | None = Field(default=None, repr=False)
     outlook_tenant_id: UUID | None = None
     outlook_client_id: UUID | None = None
     outlook_endpoint: HttpUrl | None = Field(default=None, repr=False)
@@ -119,12 +129,46 @@ class Settings(BaseSettings):
             ):
                 raise PydanticCustomError("mailpilot_policy", "Worker URL must be an HTTPS origin")
 
+        if self.scheduler_invoker_email or self.digest_job:
+            if (
+                self.role != Role.WORKER
+                or not self.scheduler_invoker_email
+                or not self.digest_job
+                or not all(task_config)
+                or self.scheduler_invoker_email == self.task_invoker_email
+                or not self.digest_job.startswith(f"projects/{self.project_id}/")
+                or not set(self.allowed_user_ids).intersection(self.allowed_chat_ids)
+            ):
+                raise PydanticCustomError(
+                    "mailpilot_policy", "invalid scheduler identity, Job or private recipients"
+                )
+
+        if self.gmail_oauth_client_version and (
+            self.role == Role.INGRESS or self.email_provider != "gmail"
+        ):
+            raise PydanticCustomError("mailpilot_policy", "Gmail OAuth secret is not allowed here")
+        if (
+            self.environment == "production"
+            and self.role != Role.INGRESS
+            and self.email_provider == "gmail"
+            and self.gmail_oauth_client_version is None
+        ):
+            raise PydanticCustomError(
+                "mailpilot_policy", "Gmail OAuth secret reference is required"
+            )
+
         secret_versions = (
             self.telegram_webhook_secret_version,
             self.telegram_bot_token_version,
             self.model_api_key_version,
+            self.gmail_oauth_client_version,
         )
-        endpoints = (self.outlook_endpoint, self.model_endpoint, self.telegram_endpoint)
+        endpoints = (
+            self.outlook_endpoint,
+            self.gmail_endpoint,
+            self.model_endpoint,
+            self.telegram_endpoint,
+        )
         if self.environment == "production":
             if self.firestore_emulator_host is not None or any(endpoints):
                 raise PydanticCustomError(
@@ -159,7 +203,12 @@ class Settings(BaseSettings):
             )
         if not 1 <= int(emulator.rsplit(":", 1)[1]) <= 65535:
             raise PydanticCustomError("mailpilot_policy", "invalid Firestore emulator port")
-        for endpoint in (self.outlook_endpoint, self.model_endpoint, self.telegram_endpoint):
+        for endpoint in (
+            self.outlook_endpoint,
+            self.gmail_endpoint,
+            self.model_endpoint,
+            self.telegram_endpoint,
+        ):
             if endpoint is None:
                 continue
             if endpoint.host not in {"localhost", "127.0.0.1", "[::1]", "mock-services"}:

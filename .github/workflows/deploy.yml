@@ -1,0 +1,48 @@
+name: Deploy MailPilot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+concurrency:
+  group: mailpilot-deploy
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: mailpilot-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MAILPILOT_PROJECT_ID: ${{ vars.GCP_PROJECT }}
+      MAILPILOT_REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: "592.0.0"
+      - name: Build and publish immutable image
+        run: |
+          registry="${MAILPILOT_REGION}-docker.pkg.dev"
+          image="$registry/$MAILPILOT_PROJECT_ID/mailpilot/mailpilot"
+          metadata=$(mktemp)
+          trap 'rm -f "$metadata"' EXIT
+          gcloud auth configure-docker "$registry" --quiet
+          docker buildx build --platform linux/amd64 --tag "$image:$GITHUB_SHA" --push --metadata-file "$metadata" .
+          digest=$(jq -er '."containerimage.digest"' "$metadata")
+          printf 'MAILPILOT_IMAGE=%s@%s\n' "$image" "$digest" >> "$GITHUB_ENV"
+      - name: Release three Cloud Run entry points
+        run: bash infra/deploy.sh --release-only
