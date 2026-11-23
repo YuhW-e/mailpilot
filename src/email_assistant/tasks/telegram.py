@@ -33,60 +33,20 @@ class TaskLease:
     row: Record
 
 
-class TelegramTasks:
+class TaskDispatch:
+    source: str
+    intents: str
+    terminal_retention: timedelta | None = None
+
     def __init__(self, db: FirestoreRepository, queue: TaskQueue, *, lease_seconds: int) -> None:
         self.db = db
         self.queue = queue
         self.lease = timedelta(seconds=lease_seconds)
 
-    def register(
-        self,
-        bot_id: str,
-        update_id: int,
-        recipient: Recipient,
-        operation: Operation,
-    ) -> str:
-        db = self.db
-        key = stable_key(bot_id, str(update_id))
-        update = db.ref("telegram_updates", key)
-        job = db.ref("tasks", key)
-        intent = db.ref("dispatch_intents", key)
-
-        def save(tx: Transaction) -> None:
-            if db.read(update, tx) is not None:
-                return
-            now = db.clock()
-            tx.create(update, {"task_id": key, "received_at": now})
-            tx.create(
-                job,
-                {
-                    "source": "telegram",
-                    "owner_id": recipient.owner_id,
-                    "user_id": recipient.user_id,
-                    "chat_id": recipient.chat_id,
-                    "operation": operation.model_dump(mode="json"),
-                    "created_at": now,
-                    "state": "pending",
-                    "next_check_at": now,
-                    "fence": 0,
-                },
-            )
-            tx.create(
-                intent,
-                {
-                    "generation": 0,
-                    "next_check_at": now,
-                    "dispatched": False,
-                },
-            )
-
-        db.atomic(save)
-        return key
-
     def dispatch(self, task_id: str) -> bool:
         db = self.db
         job = db.ref("tasks", task_id)
-        intent = db.ref("dispatch_intents", task_id)
+        intent = db.ref(self.intents, task_id)
 
         def select(tx: Transaction) -> int | None:
             row = db.read(job, tx)
@@ -94,7 +54,7 @@ class TelegramTasks:
             now = db.clock()
             if (
                 not row
-                or row.get("source") != "telegram"
+                or row.get("source") != self.source
                 or row["state"] == "done"
                 or not state
                 or state["next_check_at"] is None
@@ -140,7 +100,7 @@ class TelegramTasks:
         return True
 
     def recover(self, limit: int = 50) -> int:
-        query = self.db.client.collection("dispatch_intents").where(
+        query = self.db.client.collection(self.intents).where(
             filter=FieldFilter("next_check_at", "<=", self.db.clock())
         )
         return sum(
@@ -150,13 +110,13 @@ class TelegramTasks:
     def claim(self, task_id: str) -> TaskLease | Literal["busy", "done"]:
         db = self.db
         job = db.ref("tasks", task_id)
-        intent = db.ref("dispatch_intents", task_id)
+        intent = db.ref(self.intents, task_id)
 
         def update(tx: Transaction) -> TaskLease | Literal["busy", "done"]:
             row = db.read(job, tx)
             state = db.read(intent, tx)
             now = db.clock()
-            if not row or row.get("source") != "telegram" or row["state"] == "done" or not state:
+            if not row or row.get("source") != self.source or row["state"] == "done" or not state:
                 return "done"
             if row["next_check_at"] > now:
                 return "busy"
@@ -170,23 +130,74 @@ class TelegramTasks:
     def finish(self, lease: TaskLease, *, retry_after: float = 0) -> None:
         db = self.db
         job = db.ref("tasks", lease.task_id)
-        intent = db.ref("dispatch_intents", lease.task_id)
+        intent = db.ref(self.intents, lease.task_id)
 
         def save(tx: Transaction) -> None:
             row = db.read(job, tx)
             if not row or row["state"] != "running" or row["fence"] != lease.fence:
                 raise LeaseLost()
             next_check = db.clock() + timedelta(seconds=retry_after) if retry_after else None
-            tx.update(
-                job,
-                {
-                    "state": "pending" if retry_after else "done",
-                    "next_check_at": next_check,
-                },
-            )
-            tx.update(intent, {"next_check_at": next_check})
+            update: Record = {
+                "state": "pending" if retry_after else "done",
+                "next_check_at": next_check,
+            }
+            if next_check is None and self.terminal_retention:
+                update["expires_at"] = db.clock() + self.terminal_retention
+                tx.delete(intent)
+            else:
+                tx.update(intent, {"next_check_at": next_check})
+            tx.update(job, update)
 
         db.atomic(save)
+
+
+class TelegramTasks(TaskDispatch):
+    source = "telegram"
+    intents = "dispatch_intents"
+
+    def register(
+        self,
+        bot_id: str,
+        update_id: int,
+        recipient: Recipient,
+        operation: Operation,
+    ) -> str:
+        db = self.db
+        key = stable_key(bot_id, str(update_id))
+        update = db.ref("telegram_updates", key)
+        job = db.ref("tasks", key)
+        intent = db.ref(self.intents, key)
+
+        def save(tx: Transaction) -> None:
+            if db.read(update, tx) is not None:
+                return
+            now = db.clock()
+            tx.create(update, {"task_id": key, "received_at": now})
+            tx.create(
+                job,
+                {
+                    "source": self.source,
+                    "owner_id": recipient.owner_id,
+                    "user_id": recipient.user_id,
+                    "chat_id": recipient.chat_id,
+                    "operation": operation.model_dump(mode="json"),
+                    "created_at": now,
+                    "state": "pending",
+                    "next_check_at": now,
+                    "fence": 0,
+                },
+            )
+            tx.create(
+                intent,
+                {
+                    "generation": 0,
+                    "next_check_at": now,
+                    "dispatched": False,
+                },
+            )
+
+        db.atomic(save)
+        return key
 
 
 class TaskRequest(BaseModel):

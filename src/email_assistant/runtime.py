@@ -97,7 +97,9 @@ def digest_runtime(
             oauth = OutlookOAuth(str(tenant or UUID(int=0)), str(client or UUID(int=0)))
         provider = OutlookProvider(oauth, settings=settings)
     try:
-        repository = SyncRepository(db)
+        repository = SyncRepository(
+            db, urgent_enabled=settings.urgent_enabled or settings.email_queue_path is not None
+        )
         sync = SyncCoordinator(
             repository, provider, CredentialCoordinator(db, account_secrets, provider)
         )

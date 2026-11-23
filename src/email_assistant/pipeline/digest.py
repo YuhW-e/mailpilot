@@ -24,7 +24,7 @@ from email_assistant.storage.firestore import (
     LeaseLost,
     Record,
 )
-from email_assistant.telegram.delivery import Deliveries, Recipient, SendResult
+from email_assistant.telegram.delivery import Deliveries, Recipient, SendResult, urgent_key
 
 ZONE = ZoneInfo("Europe/Zurich")
 PAGE_SIZE = 5
@@ -75,6 +75,7 @@ class DigestEntry(BaseModel):
     sender: str
     summary: str
     late: bool = False
+    alerted: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,7 +235,8 @@ def _page_header(batch: Record, view: View, page: int) -> str:
 
 def _entry_title(entry: DigestEntry) -> str:
     late = "［补收］" if entry.late else ""
-    return f"{entry.number}. {entry.subject or '（无主题）'}{late}"
+    alerted = "［已提醒］" if entry.alerted else ""
+    return f"{entry.number}. {entry.subject or '（无主题）'}{late}{alerted}"
 
 
 def render_page(batch: Record, view: View, page: int, entries: list[DigestEntry]) -> str:
@@ -526,6 +528,10 @@ class DigestCoordinator:
                 self.store.email(recipient, entry)
             except AccountAccessError:
                 continue
+            if view == "digest":
+                alert = self.deliveries.outcome(recipient, urgent_key(entry.email_key))
+                if alert and alert.state == "confirmed":
+                    entry = entry.model_copy(update={"alerted": True})
             visible.append((segment, entry))
         entries = [entry for _, entry in visible]
         if self.buttons is None:

@@ -113,6 +113,9 @@ case "${MAILPILOT_EMAIL_PROVIDER:-gmail}" in
         ;;
 esac
 digest_env+="|MAILPILOT_EMAIL_PROVIDER=$email_provider"
+if [[ "${MAILPILOT_URGENT_ENABLED:-false}" == true ]]; then
+    digest_env+="|MAILPILOT_URGENT_ENABLED=true"
+fi
 
 run run jobs deploy "$prefix-digest" --region="$region" --image="$image" \
     --service-account="$(account job)" --command=mailpilot-job --tasks=1 --max-retries=0 \
@@ -140,7 +143,34 @@ fi
 
 task_env="MAILPILOT_TASK_QUEUE_PATH=$queue_path|MAILPILOT_TASK_WORKER_URL=$worker_url"
 task_env+="|MAILPILOT_TASK_INVOKER_EMAIL=$(account tasks)"
-deploy_worker "$digest_env|$task_env|MAILPILOT_SCHEDULER_INVOKER_EMAIL=$(account scheduler)|MAILPILOT_DIGEST_JOB=$job_path"
+worker_env="$digest_env|$task_env|MAILPILOT_SCHEDULER_INVOKER_EMAIL=$(account scheduler)|MAILPILOT_DIGEST_JOB=$job_path"
+if [[ "${MAILPILOT_URGENT_ENABLED:-false}" == true ]]; then
+    task_env+="|MAILPILOT_EMAIL_QUEUE_PATH=projects/$project/locations/$region/queues/$prefix-sync"
+    worker_env+="|MAILPILOT_EMAIL_QUEUE_PATH=projects/$project/locations/$region/queues/$prefix-sync"
+    if [[ "${MAILPILOT_EMAIL_PUSH:-false}" == true ]]; then
+        if [[ "$dry_run" == true ]]; then
+            MAILPILOT_INGRESS_URL=${MAILPILOT_INGRESS_URL:-https://mailpilot-ingress-example.run.app}
+            MAILPILOT_GRAPH_STATE_VERSION=${MAILPILOT_GRAPH_STATE_VERSION:-1}
+        fi
+        origin=${MAILPILOT_INGRESS_URL:?Set MAILPILOT_INGRESS_URL to the public Ingress origin}
+        origin=${origin%/}
+        if [[ ! "$origin" =~ ^https://[a-zA-Z0-9.-]+$ ]]; then
+            printf 'Expected an HTTPS Ingress origin.\n' >&2
+            exit 2
+        fi
+        if [[ "$email_provider" == gmail ]]; then
+            worker_env+="|MAILPILOT_GMAIL_WATCH_TOPIC=projects/$project/topics/$prefix-gmail"
+            task_env+="|MAILPILOT_GMAIL_PUSH_SUBSCRIPTION=projects/$project/subscriptions/$prefix-gmail-push"
+            task_env+="|MAILPILOT_GMAIL_PUSH_AUDIENCE=$origin/email/gmail"
+            task_env+="|MAILPILOT_GMAIL_PUSH_EMAIL=$(account pubsub)"
+        else
+            graph_state=$(version_ref graph-client-state "${MAILPILOT_GRAPH_STATE_VERSION:?Set the Graph clientState secret version}")
+            worker_env+="|MAILPILOT_GRAPH_NOTIFICATION_URL=$origin/email/graph"
+            worker_env+="|MAILPILOT_GRAPH_CLIENT_STATE_VERSION=$graph_state"
+        fi
+    fi
+fi
+deploy_worker "$worker_env"
 for role in scheduler tasks; do
     run run services add-iam-policy-binding "$prefix-worker" --region="$region" \
         --member="serviceAccount:$(account "$role")" --role=roles/run.invoker

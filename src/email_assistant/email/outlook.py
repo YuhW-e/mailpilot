@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
+from uuid import UUID
 
 import httpx
 from pydantic import SecretStr
@@ -23,6 +24,7 @@ from email_assistant.email.provider import (
     Scope,
     SyncPage,
     retry_after,
+    stable_key,
 )
 from email_assistant.security.outlook_oauth import OutlookOAuth
 
@@ -122,6 +124,8 @@ class OutlookProvider:
         *,
         body: bool = False,
         delta: bool = False,
+        method: str = "GET",
+        payload: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         prefer = 'IdType="ImmutableId"'
         if body:
@@ -130,8 +134,9 @@ class OutlookProvider:
             prefer += ", odata.maxpagesize=100"
         try:
             request = httpx.Request(
-                "GET",
+                method,
                 url,
+                json=payload,
                 headers={"Authorization": f"Bearer {token.get_secret_value()}", "Prefer": prefer},
                 extensions={"timeout": dict.fromkeys(("connect", "read", "write", "pool"), 10.0)},
             )
@@ -147,15 +152,19 @@ class OutlookProvider:
                     raise ProviderError(ErrorCode.REAUTHORIZE)
                 if status == 410 and delta:
                     raise ProviderError(ErrorCode.CURSOR_EXPIRED)
-                if status in {200, 400, 403, 404}:
+                if status == 409 and method == "POST":
+                    raise ProviderError(ErrorCode.CONFLICT)
+                if status == 204 and method == "DELETE":
+                    return {}
+                if status in {200, 201, 400, 403, 404}:
                     limit = 32 * 1024 * 1024 if body else 4 * 1024 * 1024
-                    payload = bytearray()
+                    raw = bytearray()
                     for chunk in response.iter_bytes():
-                        payload.extend(chunk)
-                        if len(payload) > limit:
+                        raw.extend(chunk)
+                        if len(raw) > limit:
                             raise ProviderError(ErrorCode.INVALID_RESPONSE)
                     try:
-                        data = json.loads(payload)
+                        data = json.loads(raw)
                     except ValueError:
                         data = {}
                     if isinstance(data, dict):
@@ -172,7 +181,7 @@ class OutlookProvider:
                             }
                         ):
                             raise ProviderError(ErrorCode.CURSOR_EXPIRED)
-                        if status == 200:
+                        if status in {200, 201}:
                             return data
                 if status in {403, 404}:
                     raise ProviderError(
@@ -184,6 +193,93 @@ class OutlookProvider:
         except httpx.TransportError:
             raise ProviderError(ErrorCode.TEMPORARY) from None
         except (AttributeError, TypeError, ValueError, httpx.HTTPError):
+            raise ProviderError(ErrorCode.INVALID_RESPONSE) from None
+
+    def subscribe(
+        self, token: SecretStr, user: str, callback: str, state: str, expiry: datetime
+    ) -> tuple[str, datetime]:
+        resource = f"users/{_segment(user)}/messages"
+        url = f"{self._base}/subscriptions"
+        # Graph hides clientState in list responses. This separate commitment identifies
+        # a create whose response was lost, including which verification key it used.
+        bound_callback = f"{callback}?binding={stable_key('graph-callback', state)}"
+        try:
+            data = self._get(
+                url,
+                token,
+                method="POST",
+                payload={
+                    "changeType": "created",
+                    "resource": resource,
+                    "notificationUrl": bound_callback,
+                    "lifecycleNotificationUrl": bound_callback,
+                    "clientState": state,
+                    "expirationDateTime": expiry.isoformat(),
+                },
+            )
+        except ProviderError as exc:
+            if exc.code != ErrorCode.CONFLICT:
+                raise
+            data = self._find_subscription(token, url, resource, user, bound_callback)
+        return self._subscription(data)
+
+    def _find_subscription(
+        self, token: SecretStr, endpoint: str, resource: str, user: str, callback: str
+    ) -> dict[str, Any]:
+        link = endpoint
+        for _ in range(5):
+            page = self._get(link, token)
+            values = page.get("value")
+            if not isinstance(values, list):
+                break
+            for item in values:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("resource", "")).lstrip("/").casefold() == resource.casefold()
+                    and str(item.get("creatorId", "")).casefold() == user.casefold()
+                    and item.get("notificationUrl") == callback
+                    and item.get("lifecycleNotificationUrl") == callback
+                    and item.get("changeType") == "created"
+                ):
+                    return item
+            next_link = page.get("@odata.nextLink")
+            if (
+                not isinstance(next_link, str)
+                or not next_link.startswith(endpoint + "?")
+                or any(char in next_link for char in "#\\\r\n\t")
+            ):
+                break
+            link = next_link
+        raise ProviderError(ErrorCode.CONFLICT)
+
+    def remove_subscription(self, token: SecretStr, subscription: str) -> None:
+        try:
+            self._get(
+                f"{self._base}/subscriptions/{_segment(subscription)}", token, method="DELETE"
+            )
+        except ProviderError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+
+    def renew_subscription(
+        self, token: SecretStr, subscription: str, expiry: datetime
+    ) -> tuple[str, datetime]:
+        data = self._get(
+            f"{self._base}/subscriptions/{_segment(subscription)}",
+            token,
+            method="PATCH",
+            payload={"expirationDateTime": expiry.isoformat()},
+        )
+        return self._subscription(data)
+
+    @staticmethod
+    def _subscription(data: dict[str, Any]) -> tuple[str, datetime]:
+        try:
+            expires = datetime.fromisoformat(data["expirationDateTime"])
+            if expires.tzinfo is None:
+                raise ValueError
+            return str(UUID(data["id"])), expires.astimezone(UTC)
+        except (KeyError, ValueError, TypeError, AttributeError):
             raise ProviderError(ErrorCode.INVALID_RESPONSE) from None
 
     def _folders(

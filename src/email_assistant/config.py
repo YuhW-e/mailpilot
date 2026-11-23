@@ -65,6 +65,20 @@ class Settings(BaseSettings):
         | None
     ) = None
 
+    urgent_enabled: bool = False
+    email_queue_path: (
+        Annotated[
+            str, Field(pattern=r"^projects/[a-z0-9-]+/locations/[a-z0-9-]+/queues/[A-Za-z0-9_-]+$")
+        ]
+        | None
+    ) = None
+    gmail_watch_topic: str | None = None
+    gmail_push_subscription: str | None = None
+    gmail_push_audience: HttpUrl | None = None
+    gmail_push_email: ServiceAccountEmail | None = None
+    graph_notification_url: HttpUrl | None = None
+    graph_client_state_version: SecretVersion | None = Field(default=None, repr=False)
+
     telegram_webhook_secret_version: SecretVersion | None = Field(default=None, repr=False)
     telegram_bot_token_version: SecretVersion | None = Field(default=None, repr=False)
     model_api_key_version: SecretVersion | None = Field(default=None, repr=False)
@@ -157,11 +171,73 @@ class Settings(BaseSettings):
                 "mailpilot_policy", "Gmail OAuth secret reference is required"
             )
 
+        push = (self.gmail_push_subscription, self.gmail_push_audience, self.gmail_push_email)
+        if any(push) and (
+            not all(push)
+            or self.role != Role.INGRESS
+            or self.email_provider != "gmail"
+            or not self.email_queue_path
+            or not re.fullmatch(
+                rf"projects/{re.escape(self.project_id)}/subscriptions/[A-Za-z0-9_-]+",
+                self.gmail_push_subscription or "",
+            )
+        ):
+            raise PydanticCustomError("mailpilot_policy", "invalid Gmail push configuration")
+        if self.gmail_push_audience is not None:
+            url = urlsplit(str(self.gmail_push_audience))
+            if (
+                url.scheme != "https"
+                or url.path != "/email/gmail"
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+                or self.gmail_push_email == self.task_invoker_email
+            ):
+                raise PydanticCustomError("mailpilot_policy", "invalid Gmail push audience")
+        if self.gmail_watch_topic and (
+            self.role != Role.WORKER
+            or self.email_provider != "gmail"
+            or not self.email_queue_path
+            or not re.fullmatch(
+                rf"projects/{re.escape(self.project_id)}/topics/[A-Za-z0-9_-]+",
+                self.gmail_watch_topic,
+            )
+        ):
+            raise PydanticCustomError("mailpilot_policy", "invalid Gmail watch topic")
+        if self.email_queue_path and (
+            self.role == Role.JOB
+            or not self.email_queue_path.startswith(f"projects/{self.project_id}/")
+            or (self.environment == "production" and not all(task_config))
+            or (
+                self.role == Role.WORKER
+                and self.environment == "production"
+                and not self.scheduler_invoker_email
+            )
+        ):
+            raise PydanticCustomError("mailpilot_policy", "invalid email queue configuration")
+        if self.graph_notification_url or self.graph_client_state_version:
+            url = urlsplit(str(self.graph_notification_url or ""))
+            if (
+                self.role != Role.WORKER
+                or self.email_provider != "outlook"
+                or not self.email_queue_path
+                or (self.environment == "production" and not self.graph_client_state_version)
+                or url.scheme != "https"
+                or url.path != "/email/graph"
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+            ):
+                raise PydanticCustomError("mailpilot_policy", "invalid Graph notification settings")
+
         secret_versions = (
             self.telegram_webhook_secret_version,
             self.telegram_bot_token_version,
             self.model_api_key_version,
             self.gmail_oauth_client_version,
+            self.graph_client_state_version,
         )
         endpoints = (
             self.outlook_endpoint,

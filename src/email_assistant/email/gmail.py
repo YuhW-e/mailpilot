@@ -129,12 +129,14 @@ class GmailProvider:
         path: str,
         *,
         params: dict[str, str | int],
+        payload: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         try:
             with self._http.stream(
-                "GET",
+                "GET" if payload is None else "POST",
                 self._base + path,
                 params=params,
+                json=payload,
                 headers={"Authorization": f"Bearer {token.get_secret_value()}"},
             ) as response:
                 status = response.status_code
@@ -182,6 +184,17 @@ class GmailProvider:
         except httpx.TransportError:
             raise ProviderError(ErrorCode.TEMPORARY) from None
         except ValueError:
+            raise ProviderError(ErrorCode.INVALID_RESPONSE) from None
+
+    def mailbox_address(self, token: SecretStr) -> str:
+        data = self._get(token, "/profile", params={"fields": "emailAddress"})
+        return _string(data.get("emailAddress"), r"[^\s@]{1,200}@[^\s@]{1,200}")
+
+    def watch(self, token: SecretStr, topic: str) -> datetime:
+        data = self._get(token, "/watch", params={}, payload={"topicName": topic})
+        try:
+            return datetime.fromtimestamp(int(data["expiration"]) / 1000, UTC)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
             raise ProviderError(ErrorCode.INVALID_RESPONSE) from None
 
     def sync_page(

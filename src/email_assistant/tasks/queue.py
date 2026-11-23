@@ -28,11 +28,12 @@ class CloudTaskQueue:
     worker: str
     invoker: str
     timeout_seconds: int = 600
+    route: str = "/internal/telegram/tasks"
 
     @classmethod
-    def configured(cls, settings: Settings) -> "CloudTaskQueue":
+    def configured(cls, settings: Settings, *, email: bool = False) -> "CloudTaskQueue":
         path, url, invoker = (
-            settings.task_queue_path,
+            settings.email_queue_path if email else settings.task_queue_path,
             settings.task_worker_url,
             settings.task_invoker_email,
         )
@@ -44,6 +45,7 @@ class CloudTaskQueue:
             str(url).rstrip("/"),
             invoker,
             max(15, min(1800, settings.hard_timeout_seconds)),
+            "/internal/email/tasks" if email else "/internal/telegram/tasks",
         )
 
     def enqueue(self, task_id: str, generation: int, at: datetime) -> None:
@@ -59,7 +61,7 @@ class CloudTaskQueue:
                         schedule_time=timestamp,
                         dispatch_deadline=Duration(seconds=self.timeout_seconds),
                         http_request=tasks_v2.HttpRequest(
-                            url=f"{self.worker}/internal/telegram/tasks",
+                            url=f"{self.worker}{self.route}",
                             http_method=tasks_v2.HttpMethod.POST,
                             headers={"Content-Type": "application/json"},
                             body=json.dumps({"task_id": task_id}).encode(),

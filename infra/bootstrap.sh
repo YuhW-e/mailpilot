@@ -80,6 +80,25 @@ for role in ingress worker; do
     account_user "$(account tasks)" "$(account "$role")"
 done
 
+if [[ "${MAILPILOT_URGENT_ENABLED:-false}" == true ]]; then
+    sync_queue="$prefix-sync"
+    sync_mode=create
+    if ensure tasks queues describe "$sync_queue" --location="$region"; then sync_mode=update; fi
+    run tasks queues "$sync_mode" "$sync_queue" --location="$region" --max-concurrent-dispatches=4 \
+        --max-dispatches-per-second=2 --max-attempts=12 --min-backoff=5s --max-backoff=300s \
+        --max-retry-duration=86400s
+    for role in ingress worker; do
+        run tasks queues add-iam-policy-binding "$sync_queue" --location="$region" \
+            --member="serviceAccount:$(account "$role")" --role=roles/cloudtasks.enqueuer
+    done
+    if [[ "$email_provider" == outlook ]]; then
+        ensure secrets describe "$prefix-graph-client-state" ||
+            run secrets create "$prefix-graph-client-state" --replication-policy=automatic
+        run secrets add-iam-policy-binding "$prefix-graph-client-state" \
+            --member="serviceAccount:$(account worker)" --role=roles/secretmanager.secretAccessor
+    fi
+fi
+
 for secret in telegram-webhook "${app_secrets[@]}"; do
     ensure secrets describe "$prefix-$secret" ||
         run secrets create "$prefix-$secret" --replication-policy=automatic

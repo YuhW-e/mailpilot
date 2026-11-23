@@ -98,7 +98,7 @@ class FirestoreRepository:
         return key
 
     def acquire(self, key: AccountKey, purpose: str, ttl: timedelta) -> Lease | None:
-        if purpose not in {"sync", "credential"} or ttl <= timedelta(0):
+        if purpose not in {"sync", "credential", "urgent"} or ttl <= timedelta(0):
             raise ValueError("Invalid account lease.")
         field = f"{purpose}_lease"
 

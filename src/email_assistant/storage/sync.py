@@ -45,8 +45,9 @@ class ScopeStatus:
 
 
 class SyncRepository:
-    def __init__(self, db: FirestoreRepository) -> None:
+    def __init__(self, db: FirestoreRepository, *, urgent_enabled: bool = False) -> None:
         self.db = db
+        self.urgent_enabled = urgent_enabled
         self._business = BusinessRepository(db)
 
     def _account_ref(self, account: AccountKey) -> DocumentReference:
@@ -341,6 +342,9 @@ class SyncRepository:
                         "scan": row["scan"],
                     },
                 )
+                historical = not row.get("last_success") and (
+                    message.received_at < row["bootstrap_at"]
+                )
                 tx.set(
                     email_ref,
                     {
@@ -350,6 +354,11 @@ class SyncRepository:
                         "sender": message.sender,
                         "subject": message.subject,
                         "source_version": message.version,
+                        **(
+                            {"urgent_check_at": self.db.clock()}
+                            if self.urgent_enabled and existing is None and not historical
+                            else {}
+                        ),
                     },
                     merge=True,
                 )
@@ -363,8 +372,7 @@ class SyncRepository:
                             "revision": 1,
                             "state": "pending",
                             "next_check_at": self.db.clock(),
-                            "historical": not row.get("last_success")
-                            and message.received_at < row["bootstrap_at"],
+                            "historical": historical,
                         },
                     )
 

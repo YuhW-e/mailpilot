@@ -1,6 +1,6 @@
 # MailPilot 云端部署手册
 
-术语和运行契约见 [架构](ARCHITECTURE.md)。本阶段运行 Gmail 定时摘要、Telegram webhook 和后台交互。邮箱推送与续期随 [TASK-05-01](tasks/05-advanced/task.md) 接入。
+术语和运行契约见 [架构](ARCHITECTURE.md)。部署包含定时摘要、Telegram webhook 和后台交互。邮件推送、续期及巡检可按本页配置启用。
 
 ## 准备测试环境
 
@@ -153,3 +153,20 @@ PY
 - Webhook 密钥轮换时，为新版本重新部署 Ingress 并立即重新注册 webhook。切换间隙中的更新会收到验证失败并由 Telegram 重试。保持旧版本可用直至新配置验证通过。
 - Gmail 刷新凭据由操作员使用 CLI 的 `rotate`，参数同授权并增加 `--account ACCOUNT_ID`。撤销 MailPilot 访问使用 `revoke`。需要重授权时运行原授权命令并指定同一个 `--account`。换 OAuth 客户端时，先以新客户端重授权账户，再更新 `MAILPILOT_GMAIL_OAUTH_VERSION` 并部署。
 - 镜像回滚时，先暂停两条摘要计划和恢复计划，并按需暂停交互队列。使用上一已知正常版本的完整镜像摘要执行 `MAILPILOT_IMAGE=... bash infra/deploy.sh --release-only`，检查三个入口与数据契约兼容，再恢复计划及队列。若回滚涉及环境变量或 secret 引用，使用上一版配置执行完整部署。保留 Firestore 中的游标、任务、投递和待核对记录。
+
+## 紧急邮件通知与翻译
+
+更新 MailPilot 镜像后，Telegram 可用 `/translate 1 3`、单封「翻译」和「本页全部翻译」。工作者只在请求内回读邮件并生成译文。启用前确认所选模型允许处理测试邮件正文，及 Telegram 端的内容保留符合项目要求。
+
+紧急提醒默认关闭。启用步骤如下。
+
+1. 在 OAuth 应用所在 GCP 项目设置 `MAILPILOT_URGENT_ENABLED=true` 并运行 `infra/bootstrap.sh`。脚本创建 `mailpilot-sync`、授予 Ingress 和 Worker 入队权限，并应用 Firestore 索引与 TTL。等待 `emails` 集合中含 `urgent_check_at` 的复合索引就绪。
+2. 只使用补扫时保持 `MAILPILOT_EMAIL_PUSH=false`。若启用推送，将 `MAILPILOT_INGRESS_URL` 设为公开 Ingress 的稳定 HTTPS origin，并选择已配置的邮箱渠道。
+   - **Gmail** 先在同项目运行 `infra/pubsub.sh`。执行者需要在专用的 `mailpilot-pubsub` 服务账号上具备 `iam.serviceAccounts.actAs`。脚本创建或更新 topic `mailpilot-gmail` 和认证推送订阅 `mailpilot-gmail-push`，赋予 Gmail 系统身份 topic 发布权限，并授权 Pub/Sub 服务代理签发该专用身份的 OIDC token。推送端点和 token audience 均为 `$MAILPILOT_INGRESS_URL/email/gmail`。
+   - **Outlook** 在 bootstrap 创建的 `mailpilot-graph-client-state` 中添加由密码学安全随机源生成的至少 32 字节的文本密钥。将 `MAILPILOT_GRAPH_STATE_VERSION` 设为对应的版本号。仅 Worker 需要读取该密钥。消息和生命周期回调都使用 `$MAILPILOT_INGRESS_URL/email/graph`。
+3. 设置 `MAILPILOT_EMAIL_PUSH=true` 后运行完整的 `infra/deploy.sh` 以应用新环境变量。每 15 分钟的恢复计划登记各活动账户的独立同步工作，按需创建或续期订阅。Gmail 每日续订 watch，Outlook 在离到期不足 48 小时时续期。
+4. 使用专用测试账户发送触发紧急规则的合成邮件，检查 Worker 的 `email_wake` 和 `email_urgent_result` 事件、Telegram 投递及摘要中的「已提醒」。按渠道分别验证。在测试环境暂时停用推送，确认下一轮 15 分钟补扫依旧投递。真实端到端测量与发布验收见 [TASK-06-01](tasks/06-release/task.md)。
+
+`subscriptions` 的 `status`、`expires_at` 和 `last_error` 可用于核对续期和补扫降级情况。Graph 密钥轮换时先部署新版本引用，等待 Worker 用新密钥重建订阅，再停用旧版本。若只需关闭推送，使用 `MAILPILOT_EMAIL_PUSH=false` 重跑完整部署，巡检仍会运行。若要关闭整个紧急功能，使用 `MAILPILOT_URGENT_ENABLED=false` 重跑完整部署，并在专用测试环境核对队列和订阅状态。Gmail watch 与 Graph 订阅会在各自的到期时间停止，Cloud Pub/Sub 订阅可由操作员清理。
+
+[Gmail 推送配置](https://developers.google.com/workspace/gmail/api/guides/push) · [Pub/Sub 推送认证](https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions) · [Graph 生命周期通知](https://learn.microsoft.com/en-us/graph/change-notifications-lifecycle-events)

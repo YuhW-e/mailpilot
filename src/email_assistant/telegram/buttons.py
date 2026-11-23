@@ -77,7 +77,16 @@ class Buttons:
                                 view=view,
                                 numbers=tuple(entry.number for entry in footer_entries),
                             ),
-                        )
+                        ),
+                        (
+                            "本页全部翻译",
+                            Operation(
+                                action="translate",
+                                batch_id=batch["batch_id"],
+                                view=view,
+                                numbers=tuple(entry.number for entry in footer_entries),
+                            ),
+                        ),
                     ]
                 )
             other: View = "filtered" if view == "digest" else "digest"

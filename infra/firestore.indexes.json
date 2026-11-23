@@ -50,6 +50,15 @@
       ]
     },
     {
+      "collectionGroup": "emails",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "owner_id", "order": "ASCENDING"},
+        {"fieldPath": "account_id", "order": "ASCENDING"},
+        {"fieldPath": "urgent_check_at", "order": "ASCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "tasks",
       "queryScope": "COLLECTION",
       "fields": [
@@ -84,6 +93,10 @@
     {"collectionGroup": "telegram_buttons", "fieldPath": "expires_at", "ttl": true, "indexes": []},
     {"collectionGroup": "telegram_results", "fieldPath": "expires_at", "ttl": true, "indexes": []},
     {"collectionGroup": "telegram_results", "fieldPath": "parts", "indexes": []},
+    {"collectionGroup": "telegram_translations", "fieldPath": "expires_at", "ttl": true, "indexes": []},
+    {"collectionGroup": "subscriptions", "fieldPath": "state_hash", "indexes": []},
+    {"collectionGroup": "subscriptions", "fieldPath": "key_version", "indexes": []},
+    {"collectionGroup": "tasks", "fieldPath": "expires_at", "ttl": true, "indexes": []},
     {"collectionGroup": "number_mappings", "fieldPath": "expires_at", "ttl": true, "indexes": []}
   ]
 }

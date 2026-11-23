@@ -28,13 +28,14 @@ from email_assistant.storage.firestore import AccountAccessError, LeaseLost, Rec
 from email_assistant.tasks.telegram import Action, Operation, TaskLease
 from email_assistant.telegram.buttons import Buttons
 from email_assistant.telegram.delivery import Recipient, SendResult
+from email_assistant.telegram.translation import TranslationWorker
 
 HELP = (
     "MailPilot 命令\n/digest 获取近 24 小时摘要\n"
     "/detail 1 3 查看本视图编号 1 和 3 的详细中文摘要\n"
     "/filtered 查看过滤清单；/filtered 2 跳到编号 2 所在页\n"
     "/rules 查看分类规则及优先级\n"
-    "/translate 2 选择翻译目标（全文翻译将在后续阶段开放）\n"
+    "/translate 2 4 将编号 2 和 4 的正文全文翻译成中文\n"
     "用按钮翻页，也可以回复任意批次消息并输入命令。"
     "直接输入编号命令时采用最近确认的批次；一次最多选择 20 个编号。"
 )
@@ -181,9 +182,12 @@ class InteractionWorker:
 
         deadline = monotonic() + self.settings.work_budget_seconds
         target_pages: dict[int, dict[int, DigestEntry]] = {}
+        translation = TranslationWorker(self.settings, self.digest, self.model)
         for number in operation.numbers:
             target = stable_key(key, str(number))
-            if self.digest.deliveries.outcome(recipient, target):
+            if operation.action == "translate":
+                target = stable_key(target, "translation")
+            elif self.digest.deliveries.outcome(recipient, target):
                 continue
             if monotonic() >= deadline:
                 return 1
@@ -193,21 +197,25 @@ class InteractionWorker:
                 target_pages[page] = {entry.number: entry for entry in entries}
             entry = target_pages.get(page, {}).get(number)
             if entry is None:
+                if operation.action == "translate":
+                    target = stable_key(target, "invalid")
                 message = f"编号 {number} 超出该批次范围。"
             else:
                 try:
-                    account, persisted = self.store.email(recipient, entry)
                     if operation.action == "translate":
-                        message = f"编号 {number} 已选中。全文翻译将在后续阶段开放。"
-                    else:
-                        source = await asyncio.to_thread(
-                            self.digest.sync.get_message,
-                            account,
-                            persisted["message_id"],
+                        delay = await translation.run(
+                            lease, recipient, target, batch, operation.view, entry, deadline
                         )
-                        detail = await self.describe(source.metadata.subject, source.text, deadline)
-                        self.store.email(recipient, entry)
-                        message = f"{number}. {plain(source.metadata.subject, 100)}\n{detail}"
+                        if delay:
+                            return delay
+                        continue
+                    account, persisted = self.store.email(recipient, entry)
+                    source = await asyncio.to_thread(
+                        self.digest.sync.get_message, account, persisted["message_id"]
+                    )
+                    detail = await self.describe(source.metadata.subject, source.text, deadline)
+                    self.store.email(recipient, entry)
+                    message = f"{number}. {plain(source.metadata.subject, 100)}\n{detail}"
                 except AccountAccessError:
                     message = f"编号 {number} 的邮件不可访问或账户未获授权。"
                 except ProviderError as exc:

@@ -29,6 +29,7 @@ def stable_key(*parts: str) -> str:
 
 
 class ErrorCode(StrEnum):
+    CONFLICT = "conflict"
     AUTHORIZATION = "authorization_rejected"
     REAUTHORIZE = "reauthorization_required"
     THROTTLED = "throttled"

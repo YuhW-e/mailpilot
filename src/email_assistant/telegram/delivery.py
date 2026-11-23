@@ -121,6 +121,10 @@ class TelegramNotifier:
         return SendResult("confirmed", message.message_id)
 
 
+def urgent_key(email_key: str) -> str:
+    return stable_key("urgent", email_key)
+
+
 class Deliveries:
     def __init__(self, db: FirestoreRepository, notifier: Notifier) -> None:
         self.db = db
