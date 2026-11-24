@@ -17,7 +17,7 @@ def main() -> None:
     base = ["gcloud", "--quiet", f"--project={args.project}", "firestore"]
 
     def apply(*options: str) -> None:
-        cmd = [*base, *options, "--database=(default)"]
+        cmd = [*base, *options, "--database=(default)", "--async"]
         if args.dry_run:
             print(f"  {shlex.join(cmd)}")
         else:

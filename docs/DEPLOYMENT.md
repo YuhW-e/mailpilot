@@ -16,7 +16,14 @@ gcloud auth login
 bash infra/bootstrap.sh
 ```
 
-干运行打印基础资源、索引及 TTL、IAM、WIF、服务和计划的 gcloud 命令。Bootstrap 启用 Run、Scheduler、Tasks、Firestore、Secret Manager、Gmail、Artifact Registry、IAM、IAM Credentials 和 STS API，并创建专用服务账号和空的应用 secrets。重复运行时复用已有资源并重新应用脚本管理的配置。已有外部授权应通过项目 IAM 单独核对。Firestore 复合索引进入 `READY` 后再验证查询。
+干运行打印基础资源、索引及 TTL、IAM、WIF、服务和计划的 gcloud 命令。Bootstrap 启用 Run、Scheduler、Tasks、Firestore、Secret Manager、Gmail、Artifact Registry、IAM、IAM Credentials 和 STS API，并创建专用服务账号和空的应用 secrets。重复运行时复用已有资源并重新应用脚本管理的配置。已有外部授权应通过项目 IAM 单独核对。
+
+Bootstrap 异步提交 Firestore 复合索引、单字段索引豁免和 TTL 配置，提交后继续配置其他资源。上线前检查后台操作结果，确认所需复合索引均为 `READY`，再验证依赖这些索引的查询。 [Firestore 索引操作](https://firebase.google.com/docs/firestore/query-data/indexing#use_the_google_cloud_cli)
+
+```bash
+gcloud firestore operations list --project="$MAILPILOT_PROJECT_ID" --database='(default)'
+gcloud firestore indexes composite list --project="$MAILPILOT_PROJECT_ID" --database='(default)'
+```
 
 ### 运行身份
 
@@ -170,3 +177,27 @@ PY
 `subscriptions` 的 `status`、`expires_at` 和 `last_error` 可用于核对续期和补扫降级情况。Graph 密钥轮换时先部署新版本引用，等待 Worker 用新密钥重建订阅，再停用旧版本。若只需关闭推送，使用 `MAILPILOT_EMAIL_PUSH=false` 重跑完整部署，巡检仍会运行。若要关闭整个紧急功能，使用 `MAILPILOT_URGENT_ENABLED=false` 重跑完整部署，并在专用测试环境核对队列和订阅状态。Gmail watch 与 Graph 订阅会在各自的到期时间停止，Cloud Pub/Sub 订阅可由操作员清理。
 
 [Gmail 推送配置](https://developers.google.com/workspace/gmail/api/guides/push) · [Pub/Sub 推送认证](https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions) · [Graph 生命周期通知](https://learn.microsoft.com/en-us/graph/change-notifications-lifecycle-events)
+
+## 发布验收与监控
+
+1. 核对 [发布清单](RELEASE_CHECKLIST.md) 和候选提交。无凭据 CI 会启动 Firestore Emulator，使用合成账户、邮件及模拟服务验证核心恢复和去重。GitHub 部署只更新三个 Cloud Run 入口的镜像。Scheduler、Pub/Sub、功能开关和凭据版本的变化应按本手册另行应用完整配置。
+2. 保存上一正常镜像的完整 Artifact Registry 引用及配置版本。发布后，在测试项目核对版本、流量 revision、Job 和 Scheduler。以下工作区端到端测试只读取资源配置与状态。生产观测以及真实邮箱和 Telegram 行为通过发布清单留证。
+
+```bash
+export MAILPILOT_E2E=1
+export MAILPILOT_E2E_PROJECT=TEST_PROJECT
+export MAILPILOT_E2E_IMAGE='REGION-docker.pkg.dev/TEST_PROJECT/mailpilot/mailpilot@sha256:RELEASE_DIGEST'
+uv run --locked --extra dev python -m pytest tests/e2e/test_staging.py -q
+```
+
+如部署在其他区域，另设 `MAILPILOT_E2E_REGION` 和 `MAILPILOT_E2E_SCHEDULER_REGION`。使用可读取测试项目 Run 和 Scheduler 元数据的 gcloud 账号。
+
+| 症状或指标 | 核对与处置 |
+| --- | --- |
+| 调度未送达或 Job 超时 | 将 Scheduler 计划时刻、Worker 请求、Job 执行名和摘要批次短 ID 关联。检查 Job 退出状态、`seconds`、`pending_accounts` 与恢复计划，保留原批次重试。 |
+| 续期失败、延迟或漏通知 | 关注 `email_subscription_failure`、续期剩余时间、游标年龄和同步队列积压。将 `email_wake` 和 `email_urgent_result` 按任务短 ID 关联，核对通知与补扫渠道。恢复订阅后验证从原游标继续。 |
+| 仍无法确认 Telegram 投递 | 按批次与分段核对测试聊天是否收到，保留该条的 `UNKNOWN` 及核对结果。需要补发时先由用户确认，再按关联的单次补发处理。 |
+| Ingress 活性探针异常 | 获取当前 Ingress 默认地址并核对 `/healthz`，同时检查正确签名的 Telegram 请求及 Worker 任务是否正常。把探针错误、revision 和时间记入验收记录。 |
+| 需回滚 | 记录三个当前入口及上一正常摘要，按本页暂停计划和所需队列，回滚镜像与相应配置，验证活性、Worker IAM、Webhook 和订阅后恢复计划及队列。 |
+
+Cloud Logging 查询聚焦应用事件、状态码、时间和短 ID。关注 Job 失败、连续续期失败、队列积压和待核对投递。建立告警时使用批准的运维收件渠道，仅附元数据；截图和工件也保留脱敏结果。
